@@ -28,6 +28,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Jigsaw-Code/outline-sdk/network"
+	"github.com/Jigsaw-Code/outline-sdk/transport/socks5"
 	"github.com/Jigsaw-Code/outline-sdk/x/httpproxy"
 )
 
@@ -139,4 +141,80 @@ func RunProxy(localAddress string, dialer *StreamDialer) (*Proxy, error) {
 		server:       server,
 		proxyHandler: proxyHandler,
 	}, nil
+}
+
+func RunTunDevice(dialer *StreamDialer) (*TunDevice, error) {
+	if dialer == nil {
+		return nil, errors.New("dialer must not be nil. Please create and pass a valid StreamDialer")
+	}
+
+	packetProxy := NewUDPPacketProxy(dialer.StreamDialer)
+
+	return NewTunDevice(dialer, packetProxy)
+}
+
+func RunSOCKS5Server(localAddress string, dialer *StreamDialer) (*SOCKS5Server, error) {
+	if dialer == nil {
+		return nil, errors.New("dialer must not be nil. Please create and pass a valid StreamDialer")
+	}
+
+	packetProxy := NewUDPPacketProxy(dialer.StreamDialer)
+
+	server := socks5.NewServer(dialer.StreamDialer, packetProxy, &socks5.NoAuthenticator{})
+
+	listener, err := net.Listen("tcp", localAddress)
+	if err != nil {
+		return nil, fmt.Errorf("could not listen on address %v: %v", localAddress, err)
+	}
+
+	host, portStr, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		listener.Close()
+		return nil, fmt.Errorf("could not parse server address '%v': %v", listener.Addr().String(), err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		listener.Close()
+		return nil, fmt.Errorf("could not parse server port '%v': %v", portStr, err)
+	}
+
+	socks5Srv := &SOCKS5Server{
+		host:     host,
+		port:     port,
+		server:   server,
+		listener: listener,
+	}
+
+	go server.Serve(listener)
+
+	return socks5Srv, nil
+}
+
+type SOCKS5Server struct {
+	host     string
+	port     int
+	server   *socks5.Server
+	listener net.Listener
+}
+
+func (s *SOCKS5Server) Address() string {
+	return net.JoinHostPort(s.host, strconv.Itoa(s.port))
+}
+
+func (s *SOCKS5Server) Host() string {
+	return s.host
+}
+
+func (s *SOCKS5Server) Port() int {
+	return s.port
+}
+
+func (s *SOCKS5Server) Stop() error {
+	if s.listener != nil {
+		s.listener.Close()
+	}
+	if s.server != nil {
+		return s.server.Close()
+	}
+	return nil
 }
