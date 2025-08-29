@@ -28,8 +28,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-sdk/network"
-	"github.com/Jigsaw-Code/outline-sdk/transport/socks5"
+	"github.com/things-go/go-socks5"
 	"github.com/Jigsaw-Code/outline-sdk/x/httpproxy"
 )
 
@@ -158,9 +157,14 @@ func RunSOCKS5Server(localAddress string, dialer *StreamDialer) (*SOCKS5Server, 
 		return nil, errors.New("dialer must not be nil. Please create and pass a valid StreamDialer")
 	}
 
-	packetProxy := NewUDPPacketProxy(dialer.StreamDialer)
-
-	server := socks5.NewServer(dialer.StreamDialer, packetProxy, &socks5.NoAuthenticator{})
+	server := socks5.NewServer(
+		socks5.WithDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if network == "tcp" {
+				return dialer.StreamDialer.DialStream(ctx, addr)
+			}
+			return nil, fmt.Errorf("unsupported network: %s", network)
+		}),
+	)
 
 	listener, err := net.Listen("tcp", localAddress)
 	if err != nil {
@@ -211,10 +215,7 @@ func (s *SOCKS5Server) Port() int {
 
 func (s *SOCKS5Server) Stop() error {
 	if s.listener != nil {
-		s.listener.Close()
-	}
-	if s.server != nil {
-		return s.server.Close()
+		return s.listener.Close()
 	}
 	return nil
 }

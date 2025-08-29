@@ -20,12 +20,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 
 	"github.com/Jigsaw-Code/outline-sdk/network"
 	"github.com/Jigsaw-Code/outline-sdk/network/lwip2transport"
 	"github.com/Jigsaw-Code/outline-sdk/transport"
-	"github.com/Jigsaw-Code/outline-sdk/transport/socks5"
+	"github.com/things-go/go-socks5"
 )
 
 type TunDevice struct {
@@ -49,7 +50,14 @@ func NewTunDevice(streamDialer *StreamDialer, packetProxy network.PacketProxy) (
 		return nil, fmt.Errorf("failed to configure tun2socks device: %w", err)
 	}
 
-	server := socks5.NewServer(streamDialer.StreamDialer, packetProxy, &socks5.NoAuthenticator{})
+	server := socks5.NewServer(
+		socks5.WithDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if network == "tcp" {
+				return streamDialer.StreamDialer.DialStream(ctx, addr)
+			}
+			return nil, fmt.Errorf("unsupported network: %s", network)
+		}),
+	)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -104,7 +112,10 @@ func (t *TunDevice) Read(packet []byte) (int, error) {
 }
 
 func (t *TunDevice) WriteTo(w io.Writer) (int64, error) {
-	return t.device.WriteTo(w)
+	if wt, ok := t.device.(io.WriterTo); ok {
+		return wt.WriteTo(w)
+	}
+	return 0, errors.New("device does not support WriteTo")
 }
 
 func (t *TunDevice) MTU() int {
@@ -120,11 +131,6 @@ func (t *TunDevice) Close() error {
 	}
 
 	var errs []error
-	if t.socks5Server != nil {
-		if err := t.socks5Server.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
 	if t.listener != nil {
 		if err := t.listener.Close(); err != nil {
 			errs = append(errs, err)
@@ -150,7 +156,7 @@ func NewUDPPacketProxy(streamDialer transport.StreamDialer) *UDPPacketProxy {
 	return &UDPPacketProxy{streamDialer: streamDialer}
 }
 
-func (p *UDPPacketProxy) NewSession(ctx context.Context, sessionKey string) (network.PacketSession, error) {
+func (p *UDPPacketProxy) NewSession(respWriter network.PacketResponseReceiver) (network.PacketRequestSender, error) {
 	return &udpSession{streamDialer: p.streamDialer}, nil
 }
 
@@ -158,7 +164,7 @@ type udpSession struct {
 	streamDialer transport.StreamDialer
 }
 
-func (s *udpSession) WriteTo(packet []byte, addr net.Addr) (int, error) {
+func (s *udpSession) WriteTo(packet []byte, addr netip.AddrPort) (int, error) {
 	return 0, errors.New("UDP over SOCKS5 not fully implemented")
 }
 
